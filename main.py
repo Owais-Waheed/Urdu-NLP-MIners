@@ -5,7 +5,7 @@ import nltk
 import io
 from io import StringIO
 import PyPDF2
-from transformers import pipeline, AutoModelForSequenceClassification, AutoTokenizer
+from transformers import pipeline, AutoModelForSequenceClassification, AutoTokenizer, AutoModelForCausalLM
 from langdetect import detect
 import torch
 # from docx import Document
@@ -72,7 +72,7 @@ def extract_text_from_file(file):
 
 
 summary_model = "./gemma"
-summarizer = AutoModelForSequenceClassification.from_pretrained(summary_model)
+summarizer = AutoModelForCausalLM.from_pretrained(summary_model)
 sum_tokenizer = AutoTokenizer.from_pretrained(summary_model)
 classifier = load_sentiment_model()
 
