@@ -1,0 +1,17 @@
+input:
+  prompt_protection:
+    check_prompt_injection: true
+
+output:
+  profanity:
+    threshold: 0.8
+    languages: ["ur", "en"]
+  toxicity:
+    threshold: 0.7
+    languages: ["ur", "en"]
+  hallucination:
+    enabled: true
+    reference: "{original_input}"  # compare with original article
+  sensitive_topics:
+    enabled: true
+    languages: ["ur", "en"]

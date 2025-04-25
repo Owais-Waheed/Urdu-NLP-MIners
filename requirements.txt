@@ -1,0 +1,10 @@
+# Core app dependencies
+streamlit
+transformers
+torch
+sentencepiece
+llm-guard
+protobuf # For compatibility with streamlit & transformers
+# Optional: for Urdu tokenization if needed
+nltk
+regex

@@ -1,20 +1,33 @@
 import streamlit as st
 import matplotlib.pyplot as plt
 from newspaper import Article
-import nltk
+# import nltk 
 import io
 from io import StringIO
 import PyPDF2
-from transformers import pipeline, AutoModelForSequenceClassification, AutoTokenizer, AutoModelForCausalLM
-from langdetect import detect
+from transformers import AutoModelForSequenceClassification, AutoTokenizer, AutoModelForCausalLM
+# from langdetect import detect
 import torch
+# from llm_guard.input_scanners import PromptInjection
+# from llm_guard.output_scanners import Toxicity
+# from llm_guard import scan_output
 # from docx import Document
 
+# def validate_summary(summary, original_text):
+#     scanners = [
+#         # Profanity(threshold=0.8, languages=["ur", "en"]),
+#         Toxicity(threshold=0.7, languages=["ur", "en"]),
+#         # SensitiveTopics(languages=["ur", "en"]),
+#         # Hallucination(reference=original_text),
+#     ]
+
+#     issues, _ = scan_output(summary, scanners)
+#     return issues
+
 # Download necessary NLTK data
-try:
-    nltk.data.find('tokenizers/punkt')
-except LookupError:
-    nltk.download('punkt')
+# nltk.download('punkt')
+# from nltk.tokenize import sent_tokenize
+    
 
 # Set page configuration
 st.set_page_config(
@@ -33,8 +46,8 @@ st.write("##")
 def load_sentiment_model():
     model_path = "./urdusenti"
     tokenizer = AutoTokenizer.from_pretrained(model_path)
-    model = AutoModelForSequenceClassification.from_pretrained(model_path)
-    return pipeline("sentiment-analysis", model=model, tokenizer=tokenizer)
+    model = AutoModelForSequenceClassification.from_pretrained(model_path).to("cpu")
+    return model, tokenizer
 
 # @st.cache_resource
 # def load_summarizer_model():
@@ -72,19 +85,25 @@ def extract_text_from_file(file):
 
 
 summary_model = "./gemma"
-summarizer = AutoModelForCausalLM.from_pretrained(summary_model)
+# summarizer = AutoModelForCausalLM.from_pretrained(summary_model).to("cpu")
 sum_tokenizer = AutoTokenizer.from_pretrained(summary_model)
-classifier = load_sentiment_model()
+summarizer = AutoModelForCausalLM.from_pretrained(summary_model,
+    torch_dtype=torch.float32,
+    low_cpu_mem_usage=False).to("cpu")
+classifier, class_tokenizer = load_sentiment_model()
 
 def get_summary(text, max_chunk_words=400, max_new_tokens=150, model=None, tokenizer=None):
-    import nltk
-    nltk.download('punkt', quiet=True)
+    
 
     # Split into sentences and form chunks
-    sentences = nltk.sent_tokenize(text)
+    # Manually split the text into sentences using simple punctuation rules
+    sentences = text.split('۔')  # Split on Urdu full stops (۔)
+    sentences = [sentence.strip() for sentence in sentences if sentence.strip()]
+
     chunks = []
     current_chunk = []
     current_length = 0
+
 
     for sentence in sentences:
         words = sentence.split()
@@ -121,35 +140,30 @@ def get_summary(text, max_chunk_words=400, max_new_tokens=150, model=None, token
     return " ".join(all_summaries)
 
 # Function to analyze sentiment using LLM
-def get_sentiment(text, classifier):
-    # Load the sentiment analysis model
-    
-    # Process long texts in chunks and aggregate results
+
+def get_sentiment(text, tokenizer, model, threshold=0.6):
+    model.eval()
     max_token_length = 512
-    
-    # If text is short enough, analyze directly
-    if len(text.split()) < max_token_length:
-        result = classifier(text)
-        label = result[0]['label']
-        score = result[0]['score']
-        
-        # Map the result to Urdu sentiment labels
-        sentiment_mapping = {
-            '1 star': "انتہائی منفی",
-            '2 stars': "منفی",
-            '3 stars': "غیر جانبدار",
-            '4 stars': "مثبت",
-            '5 stars': "انتہائی مثبت"
-        }
-        
-        return sentiment_mapping.get(label, "غیر جانبدار"), score
-    
-    # For longer texts, split and analyze in chunks
-    sentences = nltk.sent_tokenize(text)
+
+    # Urdu sentiment label mapping (index: label)
+    urdu_labels = [
+          # 0
+        "منفی",         # 1
+        "غیر جانبدار",  # 2
+        "مثبت",         # 3
+           # 4
+    ]
+
+    # Split long text into chunks
+    # Manually split the text into sentences using simple punctuation rules
+    sentences = text.split('۔')  # Split on Urdu full stops (۔)
+    sentences = [sentence.strip() for sentence in sentences if sentence.strip()]
+
     chunks = []
     current_chunk = []
     current_length = 0
-    
+
+
     for sentence in sentences:
         sentence_length = len(sentence.split())
         if current_length + sentence_length <= max_token_length:
@@ -159,29 +173,31 @@ def get_sentiment(text, classifier):
             chunks.append(" ".join(current_chunk))
             current_chunk = [sentence]
             current_length = sentence_length
-    
+
     if current_chunk:
         chunks.append(" ".join(current_chunk))
-    
-    # Analyze each chunk
-    overall_score = 0
+
+    sigmoid = torch.nn.Sigmoid()
+    all_probs = []
+
+    # Run model on each chunk and collect probabilities
     for chunk in chunks:
-        result = classifier(chunk)
-        # Convert rating to numeric score (1-5)
-        rating = int(result[0]['label'].split()[0])
-        overall_score += (rating - 1) / 4  # Normalize to 0-1 range
-    
-    # Average the scores
-    if chunks:
-        overall_score /= len(chunks)
-    
-    # Map to Urdu sentiment
-    if overall_score < 0.3:
-        return "منفی", overall_score
-    elif overall_score > 0.7:
-        return "مثبت", overall_score
-    else:
-        return "غیر جانبدار", overall_score
+        encoding = tokenizer(chunk, padding=True, truncation=True, max_length=512, return_tensors='pt')
+        with torch.no_grad():
+            outputs = model(**encoding)
+        probs = sigmoid(outputs.logits)
+        all_probs.append(probs)
+
+    # Average predictions
+    avg_probs = torch.mean(torch.stack(all_probs), dim=0).flatten()
+
+    # Apply threshold and map to Urdu labels
+    predicted_labels = (avg_probs >= threshold).int().tolist()
+    urdu_predictions = [urdu_labels[i] for i, pred in enumerate(predicted_labels) if pred == 1]
+    scores = avg_probs.tolist()
+
+    return urdu_predictions[0], scores
+
 
 # Create tabs for different input methods
 tab1, tab2, tab3 = st.tabs(["یو آر ایل", "فائل اپلوڈ", "متن داخل کریں"])
@@ -214,15 +230,24 @@ with tab1:
                     st.image(article.top_image)
                 
                 with st.spinner("خلاصہ بنایا جا رہا ہے..."):
-                    summary = get_summary(article.text, summarizer=summarizer, tokenizer=sum_tokenizer)
+                    summary = get_summary(article.text, model=summarizer, tokenizer=sum_tokenizer)
+                    # issues = validate_summary(summary, original_text=article.text)
+
+                    # if issues:
+                    #     st.warning("خلاصے میں کچھ ممکنہ مسائل پائے گئے:")
+                    #     for issue in issues:
+                    #         st.markdown(f"- ⚠️ {issue}")
+                    # else:
+                    #     st.success("خلاصہ محفوظ اور مناسب ہے۔")
+
                     st.subheader("خبر کا خلاصہ:")
                     st.write(summary)
                 
                 with st.spinner("جذباتی تجزیہ کیا جا رہا ہے..."):
-                    sentiment, score = get_sentiment(article.text, classifier=classifier)
+                    sentiment, score = get_sentiment(article.text, model=classifier, tokenizer=class_tokenizer)
                     st.subheader("جذباتی تجزیہ:")
                     st.write(f"یہ خبر **{sentiment}** ہے")
-                    st.progress(score)
+                    # st.progress(score)
                 
         except Exception as e:
             st.error(f"کوئی خرابی ہوئی ہے۔ درست یو آر ایل داخل کریں۔ خرابی: {str(e)}")
@@ -236,15 +261,24 @@ with tab2:
             
             if text:
                 with st.spinner("خلاصہ بنایا جا رہا ہے..."):
-                    summary = get_summary(text, summarizer=summarizer)
+                    summary = get_summary(text, model=summarizer, tokenizer=sum_tokenizer)
+                    # issues = validate_summary(summary, original_text=article.text)
+
+                    # if issues:
+                    #     st.warning("خلاصے میں کچھ ممکنہ مسائل پائے گئے:")
+                    #     for issue in issues:
+                    #         st.markdown(f"- ⚠️ {issue}")
+                    # else:
+                    #     st.success("خلاصہ محفوظ اور مناسب ہے۔")
+
                     st.subheader("دستاویز کا خلاصہ:")
                     st.write(summary)
                 
                 with st.spinner("جذباتی تجزیہ کیا جا رہا ہے..."):
-                    sentiment, score = get_sentiment(text, classifier=classifier)
+                    sentiment, score = get_sentiment(text,model=classifier, tokenizer=class_tokenizer)
                     st.subheader("جذباتی تجزیہ:")
                     st.write(f"یہ دستاویز **{sentiment}** ہے")
-                    st.progress(score)
+                    # st.progress(score)
 
 with tab3:
     text_input = st.text_area("اردو متن داخل کریں", height=300)
@@ -252,15 +286,24 @@ with tab3:
     
     if analyze_button and text_input:
         with st.spinner("خلاصہ بنایا جا رہا ہے..."):
-            summary = get_summary(text_input)
+            summary = get_summary(text_input, model=summarizer, tokenizer=sum_tokenizer)
+            # issues = validate_summary(summary, original_text=article.text)
+
+            # if issues:
+            #     st.warning("خلاصے میں کچھ ممکنہ مسائل پائے گئے:")
+            #     for issue in issues:
+            #         st.markdown(f"- ⚠️ {issue}")
+            # else:
+            #     st.success("خلاصہ محفوظ اور مناسب ہے۔")
+
             st.subheader("متن کا خلاصہ:")
             st.write(summary)
         
         with st.spinner("جذباتی تجزیہ کیا جا رہا ہے..."):
-            sentiment, score = get_sentiment(text_input, classifier=classifier)
+            sentiment, score = get_sentiment(text_input, model=classifier, tokenizer=class_tokenizer)
             st.subheader("جذباتی تجزیہ:")
             st.write(f"یہ متن **{sentiment}** ہے")
-            st.progress(score)
+            # st.progress(score)
 
 # Add a sidebar for model configuration
 with st.sidebar:
