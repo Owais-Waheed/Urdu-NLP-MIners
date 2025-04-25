@@ -13,11 +13,11 @@ Urdu NLP Miners addresses the underexplored domain of Urdu text analysis through
 🌐 _Low-Resource Optimization_ - Techniques adaptable to other resource-constrained languages  
 
 🏗️ **Technology Stack**  
-**NLP Core**: LLaMA, Hugging Face Transformers  
+**NLP Core**: BERT, Gemma, MT5
 **Processing**: UrduHack, SpaCy with custom Urdu rules  
 **Evaluation**: ROUGE, BLEU, sklearn metrics  
 **Deployment**: Streamlit, Google Colab  
-**Infrastructure**: AWS/GCP for scalable processing  
+**Infrastructure**: AWS/GCP for scalable processing , Fall back localhost  
 
 📚 **Data Sources**  
 We utilize curated Urdu datasets including:  
